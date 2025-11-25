@@ -372,7 +372,5 @@ In **Power BI Desktop**:
   - Surfaces fraud risk.
   - Shows future demand and recommended truck placement.
 
-This gives you a **cohesive narrative** to discuss in interviews:
 
-> “I designed a synthetic roadside assistance database, wrote SQL for operational and fraud analytics, used Python for forecasting and optimization, and built a Power BI dashboard on top of MySQL that brings it all together.”
 
