@@ -1,24 +1,29 @@
-# AAA Roadside Analytics Project
+# Automobile Association Roadside Analytics Project
 
-This repository is a **portfolio-ready analytics project** that walks through the full lifecycle:
+This repository is a **full end-to-end analytics and optimization project** built around synthetic roadside assistance data. It demonstrates:
 
-1. **SQL analytics** on synthetic roadside assistance request data.  
-2. **Power BI dashboards** built on top of SQL views and tables.  
-3. **Python forecasting and optimization** for truck placement and staffing, writing results back to MySQL for visualization in Power BI.
+- SQL data modeling and analytical querying  
+- Python-based forecasting, clustering, and optimization  
+- Power BI dashboards for operational insight  
+- A repeatable ETL + modeling pipeline using MySQL + Python  
 
-The scenario is based on an auto club (e.g., AAA) that wants to:
+The scenario represents an auto club analyzing:
 
-- Understand response times and volume patterns.
-- Detect possible abuse or fraud.
-- Forecast future roadside demand.
-- Recommend how many trucks to stage in each zone and hour.
+- Call volume patterns  
+- Response time performance  
+- Member behavior and fraud indicators  
+- Spatial hotspots  
+- Forecasted demand  
+- Optimal truck staffing by hour and zone  
+
+This project is built entirely on a **synthetic dataset**, generated programmatically.
 
 ---
 
-## Repository Structure
+## 📁 Repository Structure
 
 ```text
-aaa-roadside-analytics/
+club-roadside-analytics/
 │
 ├── README.md
 │
@@ -32,34 +37,51 @@ aaa-roadside-analytics/
 │   └── 06_fraud_score.sql
 │
 ├── python/
+│   ├── Synthetic_Roadside.py
+│   ├── 02a_assign_zones.py
 │   ├── 01_demand_forecast_time.py
 │   ├── 02_spatial_hotspots.py
 │   └── 03_truck_staffing_optimization.py
 │
 └── powerbi/
-    ├── roadside_dashboard.pbix        # (placeholder – built in Power BI Desktop)
-    ├── heatmap_visuals.png            # (exported from Power BI)
-    ├── fraud_score_visuals.png        # (exported from Power BI)
-    └── forecast_staffing_visuals.png  # (exported from Power BI)
+    ├── roadside_dashboard.pbix         # (placeholder)
+    ├── heatmap_visuals.png             # optional exports
+    ├── fraud_score_visuals.png
+    └── forecast_staffing_visuals.png
 ```
-
-You can keep the Power BI folder as a placeholder initially and add the `.pbix` and PNG exports once your visuals are built.
 
 ---
 
-## 1. SQL Layer
+# 🚦 1. Data Layer (Synthetic → SQL)
 
-All SQL scripts target **MySQL 8+**.
+### `python/Synthetic_Roadside.py`
+
+Generates the synthetic roadside dataset with:
+
+- timestamps for request → dispatch → arrival → completion  
+- geo-coordinates (lat/lng)  
+- city, state, ZIP  
+- vehicle & member attributes  
+- issue types  
+- membership metadata  
+
+The script writes the CSV twice:
+
+1. To the project directory  
+2. To MySQL’s `secure_file_priv` directory so `LOAD DATA INFILE` can import it  
+
+---
 
 ### `sql/00_schema_and_seed_data.sql`
 
-- Creates the database and main table:
+This script:
 
-  - `aaa_roadside`
-  - `roadside_requests`
+1. Creates the `aaa_roadside` database  
+2. Creates the master fact table: `roadside_requests`  
+3. Includes a nullable `zone_id` column (populated later by clustering)  
+4. Contains an optional `LOAD DATA INFILE` block to ingest the synthetic CSV  
 
-- To import the synthetic dataset, uncomment the LOAD DATA INFILE block in 00_schema_and_seed_data.sql and update the filepath to match your local MySQL secure_file_priv directory.
-- Run this file **first**:
+Run this before any other SQL or Python step:
 
 ```sql
 SOURCE sql/00_schema_and_seed_data.sql;
@@ -67,310 +89,237 @@ SOURCE sql/00_schema_and_seed_data.sql;
 
 ---
 
-### `sql/01_response_times.sql`
+# 🔍 2. SQL Analytical Layer
 
-Creates a view with detailed time metrics per request:
+These scripts build reusable views for BI and fraud analysis.
 
-- `dispatch_lag_min` (request → dispatch)  
-- `travel_time_min` (dispatch → arrival)  
-- `on_scene_time_min` (arrival → completion)  
-- `total_handle_time_min` (request → completion)
+### `01_response_times.sql`
 
-View created:
+Creates **`roadside_response_times`**, a view computing:
 
-- `roadside_response_times`
+- dispatch lag  
+- travel time  
+- on-scene time  
+- total handle time  
 
-Example usage:
-
-```sql
-SELECT city, road_type, AVG(total_handle_time_min) AS avg_total_handle_time
-FROM roadside_response_times
-GROUP BY city, road_type
-ORDER BY avg_total_handle_time DESC;
-```
+Used for operational performance dashboards.
 
 ---
 
-### `sql/02_heatmap_dow_hour.sql`
+### `02_heatmap_dow_hour.sql`
 
-Aggregates call volume by **day-of-week** and **hour-of-day** for heatmap visuals.
-
-View created:
-
-- `roadside_calls_dow_hour`
-
-Columns:
-
-- `day_of_week` (1 = Sunday … 7 = Saturday)  
-- `hour_of_day` (0–23)  
-- `call_count`
-
-Use this as the **source for a matrix/heatmap visual** in Power BI.
+Creates **`roadside_calls_dow_hour`**, a day-of-week × hour-of-day matrix for call volume.  
+Perfect for heatmaps in Power BI.
 
 ---
 
-### `sql/03_rolling_30_day_calls.sql`
+### `03_rolling_30_day_calls.sql`
 
-Calculates **rolling 30‑day call activity per member** using window functions:
+Uses window functions to compute each member’s:
 
-- For each member:
-  - `total_calls`
-  - `max_calls_in_30d` (max rolling 30‑day calls)
+- rolling 30-day call count  
+- max calls in any 30-day period  
+- total calls  
 
-This script is written as a CTE + `SELECT` query. You can run it directly, or uncomment the `CREATE TABLE` section in the file to persist results as:
-
-- `roadside_call_activity_30d`
+This identifies unusual caller frequency.
 
 ---
 
-### `sql/04_vin_sharing.sql`
+### `04_vin_sharing.sql`
 
-Identifies **VINs shared across multiple member IDs**, which can be a fraud/abuse signal.
+Flags possible **VIN-sharing fraud**:
 
-- Finds VINs linked to more than one distinct member.
-- Flags members with a shared VIN:
-
-  - `member_id`
-  - `has_shared_vin` (0/1)
-
-You can optionally persist the result as:
-
-- `roadside_member_vin_flags`
-
-(uncomment the `CREATE TABLE` statement in the script).
+- Identifies VINs linked to multiple member IDs  
+- Flags affected members  
 
 ---
 
-### `sql/05_far_from_home.sql`
+### `05_far_from_home.sql`
 
-Flags whether each request is **“far from home”** based on ZIP mismatch.
-
-Creates view:
-
-- `roadside_far_from_home`
-
-Key columns:
-
-- `service_zip`
-- `member_home_zip`
-- `is_far_from_home` (0/1)
-- `miles_towed`, `city`, `state`, `zone_id`
-
-This view feeds into the fraud score and can also be used for standalone analysis (e.g., % of calls far from home by state).
+Creates **`roadside_far_from_home`**, which flags calls **outside** the member’s home ZIP.  
+Useful for fraud scoring and behavioral profiling.
 
 ---
 
-### `sql/06_fraud_score.sql`
+### `06_fraud_score.sql`
 
-Combines multiple signals into a **simple fraud / abuse score** per member:
+Combines:
 
-Inputs:
+- max 30-day call volume  
+- shared VIN flag  
+- % of calls far from home  
 
-- Rolling 30‑day call activity (`max_calls_in_30d`)
-- Shared VIN flag (`has_shared_vin`)
-- % of calls far from home (`pct_far_from_home`)
-
-Output columns:
-
-- `member_id`
-- `total_calls`
-- `max_calls_in_30d`
-- `has_shared_vin`
-- `pct_far_from_home`
-- `fraud_score` (0–100, based on a simple point system)
-
-You can turn this into a persistent table (e.g., `roadside_member_fraud_scores`) by uncommenting the `CREATE TABLE` block in the script.
+Into a simple **0–100 fraud score** with transparent weighting.
 
 ---
 
-## 2. Python Layer
+# 🧠 3. Python Modeling Layer
 
-Python scripts assume:
+This is where clustering, forecasting, and optimization occur.
 
-- You have a working MySQL instance with the `aaa_roadside` database.
-- Your MySQL connection settings are provided via environment variables:
+## Step 1 — Assign Zones from GPS  
+### `python/02a_assign_zones.py`
 
-  - `AAA_DB_USER`
-  - `AAA_DB_PWD`
-  - `AAA_DB_HOST`
-  - `AAA_DB_PORT` (optional – defaults to `3306`)
+Because the synthetic data has no operational zones, DBSCAN is used to identify spatial clusters.  
+This script:
 
-### Suggested Python Environment
+- Loads all lat/lng points  
+- Runs DBSCAN with a haversine distance metric  
+- Maps clusters → zone IDs (`1, 2, 3…`)  
+- Noise points → `zone_id = 0`  
+- **Writes zone_id back into `roadside_requests`**  
 
-```bash
-pip install pandas sqlalchemy mysql-connector-python statsmodels scikit-learn pulp
-```
+This must be run **before any forecasting or staffing**.
 
 ---
 
+## Step 2 — Hourly Demand Forecasting  
 ### `python/01_demand_forecast_time.py`
 
-**Goal:** Forecast hourly roadside call volume.
+For each zone:
 
-Workflow:
+1. Aggregates call volume per hour  
+2. Ensures continuous hourly ranges  
+3. Fits Holt–Winters (weekly seasonality) when possible  
+4. Falls back to naive mean when short history  
+5. Writes forecasts to:
 
-1. Connects to MySQL (`aaa_roadside`).
-2. Aggregates call counts per hour (by `zone_id`).
-3. Fits a time series model for each zone:
-   - Holt‑Winters with weekly seasonality if enough history.
-   - Falls back to a naive mean model otherwise.
-4. Writes results to table:
+   **`roadside_demand_forecast_hourly`**
 
-   - `roadside_demand_forecast_hourly`
+Columns include:
 
-Columns:
-
-- `ts` (hourly timestamp)
+- `ts`
 - `zone_id`
 - `forecast_calls`
-- `lower_80`
-- `upper_80`
-- `model_name`
+- confidence bands (`lower_80`, `upper_80`)
+- model used
 
-This table is the input to Power BI’s **Forecast & Staffing** tab.
+These forecasts feed into Power BI and staffing optimization.
 
-Run:
+---
 
+## Step 3 — Spatial Hotspot Detection  
+### `python/02_spatial_hotspots.py`
+
+Finds persistent spatial density clusters:
+
+- Uses DBSCAN on lat/lng  
+- Computes cluster centroids  
+- Calculates a `hotspot_score` (cluster size)  
+- Writes to:
+
+  **`roadside_hotspots`**
+
+Used for map visuals and possible future dynamic routing.
+
+---
+
+## Step 4 — Truck Staffing Optimization  
+### `python/03_truck_staffing_optimization.py`
+
+Using the demand forecast:
+
+- For each hour and zone  
+- Builds an integer linear program (PuLP)  
+- Decision: number of trucks per zone  
+- Objective: minimize total trucks  
+- Constraint: trucks × capacity ≥ forecasted demand × target service level  
+
+Example:  
+> “At least 90% of expected calls must be coverable by assigned trucks.”
+
+Writes results to:
+
+**`roadside_staffing_plan`**
+
+This provides a full **hour-by-hour, zone-by-zone staffing plan**.
+
+---
+
+# 📊 4. Power BI Dashboard
+
+Connect Power BI Desktop to MySQL (`aaa_roadside`) and import:
+
+- `roadside_requests`  
+- `roadside_response_times`  
+- `roadside_calls_dow_hour`  
+- `roadside_far_from_home`  
+- `roadside_demand_forecast_hourly`  
+- `roadside_hotspots`  
+- `roadside_staffing_plan`  
+- (optional) materialized fraud scores  
+
+### Recommended Report Tabs
+
+#### **1. Operations Overview**
+- Response time KPIs  
+- Trends by city/zone  
+- Issue type distribution  
+
+#### **2. Volume Heatmap**
+- Day-of-week × hour-of-day matrix  
+- Peak volume identification  
+
+#### **3. Fraud & Risk**
+- Member fraud score table  
+- Top suspicious members  
+- VIN-sharing details  
+
+#### **4. Forecast & Staffing**
+- Hourly forecast line charts  
+- Hotspot map  
+- Truck staffing recommendations  
+
+---
+
+# 🔁 Pipeline Order (End-to-End)
+
+This is the correct full-run order:
+
+### **1. Generate synthetic data**
+```bash
+python python/Synthetic_Roadside.py
+```
+
+### **2. Run schema + import**
+```sql
+SOURCE sql/00_schema_and_seed_data.sql;
+```
+
+### **3. Populate zones**
+```bash
+python python/02a_assign_zones.py
+```
+
+### **4. Create views (SQL 01–06)**
+Run each SQL file or source them together.
+
+### **5. Generate forecasts**
 ```bash
 python python/01_demand_forecast_time.py
 ```
 
----
-
-### `python/02_spatial_hotspots.py`
-
-**Goal:** Identify spatial **hotspots** of roadside calls using clustering.
-
-Workflow:
-
-1. Pulls `latitude`, `longitude`, `zone_id`, and `request_ts` from `roadside_requests`.
-2. Runs **DBSCAN** per zone using a haversine distance metric.
-3. For each cluster (non‑noise), computes:
-
-   - centroid latitude/longitude
-   - `hotspot_score` = number of calls in the cluster
-
-4. Writes results to:
-
-   - `roadside_hotspots`
-
-Columns:
-
-- `as_of_date`
-- `zone_id`
-- `cluster_id`
-- `centroid_lat`
-- `centroid_lng`
-- `hotspot_score`
-- `method` (e.g., `"DBSCAN_haversine"`)
-
-Run:
-
+### **6. Produce hotspot summaries**
 ```bash
 python python/02_spatial_hotspots.py
 ```
 
----
-
-### `python/03_truck_staffing_optimization.py`
-
-**Goal:** Recommend how many **trucks** to stage in each zone for each hour.
-
-Workflow:
-
-1. Reads forecasts from `roadside_demand_forecast_hourly`.
-2. Uses a simple assumption for capacity:
-
-   - Each truck can handle `CALLS_PER_TRUCK_PER_HOUR` calls.
-   - Aim to cover `TARGET_SERVICE_LEVEL` (e.g., 90%) of forecasted demand.
-
-3. Builds an integer programming model in **PuLP**:
-
-   - Decision variable: number of trucks per zone per hour (must be integer).
-   - Objective: minimize total number of trucks.
-   - Constraint: truck capacity ≥ target demand.
-
-4. Writes recommendations to:
-
-   - `roadside_staffing_plan`
-
-Columns:
-
-- `ts`
-- `zone_id`
-- `recommended_trucks`
-- `expected_calls`
-- `target_service_lvl`
-- `model_name`
-
-Run:
-
+### **7. Recommend staffing**
 ```bash
 python python/03_truck_staffing_optimization.py
 ```
 
----
-
-## 3. Power BI Layer
-
-In **Power BI Desktop**:
-
-1. **Connect to MySQL**  
-   - Data source: MySQL database  
-   - Server: your MySQL host  
-   - Database: `aaa_roadside`
-
-2. **Import the key tables/views:**
-
-   - `roadside_requests`
-   - `roadside_response_times` (view)
-   - `roadside_calls_dow_hour` (view)
-   - `roadside_far_from_home` (view)
-   - `roadside_member_fraud_scores` (if materialized)
-   - `roadside_demand_forecast_hourly`
-   - `roadside_hotspots`
-   - `roadside_staffing_plan`
-
-3. **Suggested Report Tabs:**
-
-   - **Operations Overview**
-     - KPIs: total calls, average response time, SLA %
-     - Trend line: calls over time
-     - Bar charts: response times by city/zone
-
-   - **Volume Heatmap**
-     - Matrix/heatmap using `roadside_calls_dow_hour`
-     - Rows: day_of_week, Columns: hour_of_day, Values: call_count
-
-   - **Fraud & Risk**
-     - Table: member, total calls, max_calls_in_30d, fraud_score
-     - Bar chart of fraud_score distribution
-     - Drill-through to member-level detail
-
-   - **Forecast & Staffing**
-     - Line chart of forecasted calls (`roadside_demand_forecast_hourly`)
-     - Map of hotspots (lat/long from `roadside_hotspots`)
-     - Table or bar chart of recommended_trucks by zone/hour (`roadside_staffing_plan`)
-
-4. Save your report as:
-
-   - `powerbi/roadside_dashboard.pbix`
-
-   and optionally export static PNGs of each tab into the same folder.
+### **8. Visualize in Power BI**
 
 ---
 
-## How Everything Fits Together
+# ✔ Summary
 
-- **SQL** defines the schema, cleans/aggregates operational data, and creates views for BI and fraud/risk analysis.
-- **Python** adds:
-  - Time series forecasting for call volume.
-  - Spatial clustering to find hotspots.
-  - Integer programming to recommend staffing levels.
-- **Power BI** sits on top of both:
-  - Visualizes current performance.
-  - Surfaces fraud risk.
-  - Shows future demand and recommended truck placement.
+This project demonstrates:
 
-
-
+- Advanced SQL analytics (window functions, fraud logic, KPI views)
+- Spatial clustering (DBSCAN with haversine distance)
+- Time series forecasting (Holt–Winters)
+- Linear optimization (PuLP)
+- A clean ETL → modeling → BI pipeline
+- A realistic operational analytics scenario (AAA-style roadside support)
