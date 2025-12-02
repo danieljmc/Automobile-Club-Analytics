@@ -3,6 +3,10 @@
 
 This project simulates a complete roadside assistance analytics workflow using synthetic data. It demonstrates how SQL, Python, and Power BI can work together to support operational decisions such as staffing, fraud detection, and performance monitoring. The dataset is entirely synthetic and modeled after real-world AAA‑style roadside operations.
 
+![Python](https://img.shields.io/badge/Python-3.10-blue)
+![Power BI](https://img.shields.io/badge/PowerBI-Dashboard-yellow)
+![MySQL](https://img.shields.io/badge/Database-MySQL-orange)
+
 ---
 
 # 🚀 Quick Start
